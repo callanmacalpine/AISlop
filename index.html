@@ -1258,19 +1258,29 @@ function caveAtWorld(x, y, z, depth) {       // same field evaluated anywhere (f
   return caveTest(v[0], v[1], v[2], y, depth);
 }
 
-// ── The depths ── Below y≈22 the stone gives way to hellrock: huge open caverns (most open around y 12) with a lava
-// sea at y ≤ 8, fires burning on the rock, glowstone hanging from the ceilings, basalt pockets and magma near the lava.
-const LAVA_Y = 8, HN = 8;   // hell lattice: 5 × 5 × 8 samples (every 4 blocks, y 0…28)
+// ── The depths ── Below y≈30 the stone gives way to hellrock: vast open caverns (most open around y 17, up to ~20
+// blocks high) over a lava sea at y ≤ 8, fires burning on the rock, glowstone hanging from the ceilings, basalt pockets
+// and magma near the lava. Long rifts split the surface here and there and drop straight down into them.
+const LAVA_Y = 8, HN = 10;   // hell lattice: 5 × 5 × 10 samples (every 4 blocks, y 0…36)
 const hellLat = new Float32Array(LNXZ * HN);
 function fillHellLattice(ox, oz) {
   for (let iy = 0; iy < HN; iy++) for (let iz = 0; iz < LNX; iz++) for (let ix = 0; ix < LNX; ix++) {
     const x = ox + ix * 4, y = iy * 4, z = oz + iz * 4;
-    hellLat[ix + iz * LNX + iy * LNXZ] = noiseF.noise3(x * 0.03, y * 0.065, z * 0.03) + noiseF.noise3(x * 0.08 + 50, y * 0.11, z * 0.08 - 20) * 0.35;
+    hellLat[ix + iz * LNX + iy * LNXZ] = noiseF.noise3(x * 0.021, y * 0.05, z * 0.021) + noiseF.noise3(x * 0.07 + 50, y * 0.1, z * 0.07 - 20) * 0.3;
   }
 }
+const HELL_MID = 17;
 function hellOpen(lx, y, lz) {
   const i = (lx >> 2) + (lz >> 2) * LNX + (y >> 2) * LNXZ, v = tri(hellLat, i, (lx & 3) * 0.25, (y & 3) * 0.25, (lz & 3) * 0.25);
-  return v > 0.02 + Math.abs(y - 12) * 0.045;
+  return v > -0.1 + Math.abs(y - HELL_MID) * 0.032;
+}
+// Rifts: long, winding chasms (a band along the zero-line of a 2D noise, broken into segments by a second noise),
+// narrow at the top and widening as they fall into the depths. Value 0 (none) … 1 (the middle of the chasm).
+function riftAt(x, z) {
+  const gate = noiseF.noise(x * 0.0017 - 700, z * 0.0017 + 50);
+  if (gate < 0.1) return 0;
+  const ridge = 1 - Math.abs(noiseF.noise(x * 0.0042 + 300, z * 0.0042 - 120)) * 13;
+  return ridge > 0 ? ridge * smoothstep(0.1, 0.3, gate) : 0;
 }
 const hellTopAt = (x, z) => HELL_TOP - 1 + Math.floor(noiseF.noise(x * 0.05, z * 0.05) * 2.5);
 const GG = 20, GM = 2;   // generation grid: chunk + 2-block margin (so trees can cross chunk borders)
@@ -1301,6 +1311,7 @@ function generateChunk(ch) {
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) minN = Math.min(minN, genH[gi + dx + dz * GG]);
     const carveTop = minN <= SEA + 2 ? minN - 4 : h;
     const hTop = hellTopAt(wx, wz), hellCarveTop = Math.min(hTop - 2, minN <= SEA + 2 ? minN - 7 : 99);
+    const rift = minN <= SEA + 2 ? 0 : riftAt(wx, wz), riftSpan = Math.max(1, h - LAVA_Y);
     for (let y = 0; y <= h; y++) {
       const depth = h - y;
       let id;
@@ -1324,6 +1335,7 @@ function generateChunk(ch) {
         if (y <= hellCarveTop && hellOpen(lx, y, lz)) id = y <= LAVA_Y ? B.LAVA : B.AIR;
         else if (y <= LAVA_Y + 2 && y >= LAVA_Y - 1 && id === B.HELLROCK && hash3(wx, y, wz, seed + 11) < 0.12) id = B.MAGMA;
       } else if (y >= 5 && y <= carveTop && caveAt(lx, y, lz, depth)) id = B.AIR;
+      if (rift > 0.18 && y > LAVA_Y && id !== B.BEDROCK && rift > 0.18 + 0.32 * ((y - LAVA_Y) / riftSpan) ** 1.5) id = B.AIR;   // the rift
       data[base + (y << 8)] = id;
     }
     for (let y = h + 1; y <= SEA; y++) data[base + (y << 8)] = B.WATER;
@@ -1357,7 +1369,7 @@ function generateChunk(ch) {
     const gi = ix + iz * GG, h = genH[gi], b = genB[gi], rr = hash3(gx, 91, gz, seed);
     const dens = b === BIO.FOREST ? 0.78 : b === BIO.PLAINS ? 0.07 : b === BIO.MOUNTAIN ? 0.12 : b === BIO.DESERT ? 0.12 : 0;
     if (rr >= dens) continue;
-    if (caveAtWorld(tx, h, tz, 0) || caveAtWorld(tx, h - 1, tz, 1)) continue;   // no trees/cacti over cave mouths
+    if (caveAtWorld(tx, h, tz, 0) || caveAtWorld(tx, h - 1, tz, 1) || riftAt(tx, tz) > 0.15) continue;   // no trees/cacti over cave mouths or rifts
     if (b === BIO.DESERT) {
       if (rr < 0.12 && h > SEA + 1) {
         const ht = 1 + Math.floor(hash3(gx, 95, gz, seed) * 3);
@@ -1379,6 +1391,24 @@ function generateChunk(ch) {
     else if (rr < (b === BIO.PLAINS ? 0.16 : 0.08)) data[base + ((h + 1) << 8)] = B.TALLGRASS;
     else continue;
     if (h + 1 > ch.maxY) ch.maxY = h + 1;
+  }
+  // A follower's camp: a fire in a cobblestone hearth and a log to sit on
+  ch.camp = null;
+  if (hash3(ch.cx, 777, ch.cz, seed) < CAMP_ODDS) for (let tryN = 0; tryN < 10 && !ch.camp; tryN++) {
+    const lx = 3 + ((hash3(ch.cx, 778 + tryN * 7, ch.cz, seed) * 8) | 0), lz = 3 + ((hash3(ch.cx, 779 + tryN * 7, ch.cz, seed) * 8) | 0);
+    const gi = (lx + GM) + (lz + GM) * GG, h = genH[gi], b = genB[gi], at = (x, y, z) => data[x + z * 16 + (y << 8)];
+    const clear = (x, y, z) => { const id = at(x, y, z); return id === B.AIR || KIND[id] === K_PLANT; };
+    const okB = b === BIO.PLAINS || b === BIO.FOREST || b === BIO.DESERT || b === BIO.SNOW || b === BIO.MOUNTAIN;
+    if (okB && h > SEA + 1 && h < HEIGHT - 6 && genH[gi + 2] === h && genH[gi + 2 + 2 * GG] === h && riftAt(ox + lx, oz + lz) < 0.05 && riftAt(ox + lx + 2, oz + lz) < 0.05
+      && SOLID[at(lx, h, lz)] && SOLID[at(lx + 2, h, lz)] && SOLID[at(lx + 2, h, lz + 2)]
+      && clear(lx, h + 1, lz) && clear(lx, h + 2, lz) && clear(lx + 2, h + 1, lz) && clear(lx + 2, h + 2, lz) && clear(lx + 2, h + 1, lz + 2)) {
+      const fi = lx + 2 + lz * 16 + ((h + 1) << 8);
+      data[fi - LAYER] = B.COBBLE; data[fi] = B.FIRE; data[lx + 2 + (lz + 2) * 16 + ((h + 1) << 8)] = B.LOG;
+      data[lx + lz * 16 + ((h + 1) << 8)] = B.AIR;
+      ch.emitters.add(fi);
+      if (h + 1 > ch.maxY) ch.maxY = h + 1;
+      ch.camp = { x: ox + lx + 0.5, y: h + 1.01, z: oz + lz + 0.5, key: ckey(ch.cx, ch.cz) };
+    }
   }
   computeHmap(ch);
 }
@@ -1933,7 +1963,7 @@ function setBlock(x, y, z, id, dirty, meta = 0) {   // dirty: optional Set to ba
 // Metadata: bits 0–2 = level, bit 3 = falling.
 const fluidQ = new Map();            // wkey → [x, y, z, due time]
 let fluidClock = 0, fluidAcc = 0, fluidDirty = null, fluidSoundT = 0;
-const HELL_TOP = 22;                 // the depths begin below this height (see world generation)
+const HELL_TOP = 30;                 // the depths begin below this height (see world generation)
 const fluidDelay = (id, y) => (id === B.LAVA ? (y <= HELL_TOP ? 0.5 : 1.5) : 0.25);
 const fluidMax = (id, y) => (id === B.LAVA && y > HELL_TOP ? 3 : 7);
 function fluidSchedule(x, y, z, delay) {
@@ -2147,6 +2177,7 @@ function updateChunks(budgetMs, dt) {
       const o = offsets[i]; if (o[2] > R2) break;
       const ch = chunks.get(ckey(pcx + o[0], pcz + o[1]));
       if (ch && !ch.needsMesh && !ch.animalsSpawned) { trySpawnHerd(ch); n++; }
+      if (ch && !ch.needsMesh && ch.camp && !ch.campSpawned) spawnCampFollower(ch);
     }
   }
   unloadTimer -= dt;
@@ -2917,7 +2948,7 @@ function findSpawnColumn() {
   for (let i = 0; i < 3000; i++) {
     const ang = i * 2.39996, rad = Math.sqrt(i) * 12, x = Math.round(Math.cos(ang) * rad), z = Math.round(Math.sin(ang) * rad);
     sampleColumn(x, z);
-    if (_h > SEA + 2 && _h < SEA + 26 && (_b === BIO.PLAINS || _b === BIO.FOREST)) return { x, z };
+    if (_h > SEA + 2 && _h < SEA + 26 && (_b === BIO.PLAINS || _b === BIO.FOREST) && riftAt(x, z) < 0.01 && riftAt(x + 6, z) < 0.01 && riftAt(x, z + 6) < 0.01) return { x, z };
   }
   return { x: 0, z: 0 };
 }
@@ -2942,7 +2973,7 @@ function raycast(ox, oy, oz, dx, dy, dz, maxD) {
   return null;
 }
 
-let target = null, targetAnimal = null;   // (targetCompanion lives in the companion section)
+let target = null, targetAnimal = null;   // (targetFollower lives in the followers section)
 const mouse = { left: false, right: false, rightTimer: 0, leftUsed: false, rightUsed: false };   // *Used: click went to an animal
 const breaking = { active: false, x: 0, y: 0, z: 0, progress: 0, total: 1, tick: 0 };
 let breakCooldown = 0, animTime = 0;
@@ -3033,10 +3064,10 @@ function updateInteraction(dt) {
     target = raycast(o.x, o.y, o.z, lookDir.x, lookDir.y, lookDir.z, REACH);
     targetAnimal = pickAnimal(o, lookDir, target ? target.t : REACH);   // an animal in front of the block wins
     if (targetAnimal) target = null;
-    const ct = pickCompanion(o, lookDir, target ? target.t : REACH);
-    targetCompanion = ct !== null && (!targetAnimal || ct < 99);
-    if (targetCompanion) { target = null; targetAnimal = null; }
-  } else targetCompanion = false;
+    const ft = pickFollower(o, lookDir, target ? target.t : REACH);
+    targetFollower = ft ? ft.f : null;
+    if (targetFollower) { target = null; targetAnimal = null; }
+  } else targetFollower = null;
   const creative = !isSurvival();
   const breakable = target && isFinite(creative ? BLOCKS[target.id].hardness : survivalBreakTime(target.id, heldStack()));
   const wantBreak = mouse.left && !mouse.leftUsed && target && breakCooldown <= 0 && breakable && !surv.dead && !player.riding;
@@ -3775,7 +3806,7 @@ function nameTaken(n) {
   try {
     for (const s of inv) if (s && s.data && s.data.name === n) return true;
     if (thrown.some((t) => t.data && t.data.name === n)) return true;
-    return !!(companion && companion.pack.some((s) => s && s.data && s.data.name === n));
+    return followers.some((f) => f.pack.some((s) => s && s.data && s.data.name === n));
   } catch (e) { return false; }
 }
 function sillyName(sp) {
@@ -5216,45 +5247,79 @@ window.addEventListener('resize', () => {
   cssRenderer.setSize(innerWidth, innerHeight);
 });
 
-// ───────────────────────────── COMPANION ─────────────────────────────
-// Wren, an original travelling companion who camps a short walk from where you start. Right-click her to recruit her.
-// After that she follows you around, right-click opens her pack (27 slots), and when your own bag is full, things you
-// walk over go into her pack instead. Shift + right-click tells her to wait here / follow again. Nothing hurts her.
+// ───────────────────────────── FOLLOWERS ─────────────────────────────
+// Wandering followers (all original characters) camp around the world: Wren a short walk from where you start, and
+// many more beside campfires further out. Right-click one to recruit them: they follow you, each carries a 27-slot
+// pack (right-click to open it — and when your own bag is full, things you walk over go into the nearest follower's
+// pack), and Shift + right-click tells them to wait here / follow again. They're devoted to the Crooner, the figure
+// said to sing in the depths… and they do NOT enjoy fire or lava. Burn them enough and they faint and limp home.
 const COMPANION_NAME = 'Wren';
+const FOLLOWER_NAMES = ['Tamsin', 'Odo', 'Juniper', 'Bram', 'Fenna', 'Corwin', 'Hester', 'Ivo', 'Nell', 'Rook', 'Marlo', 'Sable', 'Tobin', 'Edda',
+  'Quill', 'Linnet', 'Garrick', 'Mabry', 'Osric', 'Wilda', 'Perrin', 'Ottilie', 'Fitch', 'Briar'];
+const CAMP_ODDS = 0.04;   // about one chunk in 25 rolls for a follower's camp (if there's a flat dry spot for it)
+const FOLLOWER_HP = 20;
 const GREET_LINES = ["Oh! A traveller. I've been hoping someone interesting would come by.", 'Need an extra pair of hands? I carry more than I look like I can.',
-  "You look like you're about to go somewhere dangerous. Can I come?"];
-const RECRUIT_LINES = ["Lead the way. Whatever you can't carry, I'll haul."];
+  "You look like you're about to go somewhere dangerous. Can I come?", 'Blessings of the Crooner upon you, stranger. Need a porter?',
+  "Have you heard the Crooner sing? Down deep, where it's warm? …Never mind. Want company?"];
+const RECRUIT_LINES = ["Lead the way. Whatever you can't carry, I'll haul.", 'Sworn to carry your burdens! Within reason.', "Onward! The Crooner smiles on us. Probably."];
 const FOLLOW_LINES = ['Right behind you.', 'On my way!', 'Coming, coming.'];
 const WAIT_LINES = ["I'll keep watch here.", "Take your time — I'll be right here."];
 const PACK_LINES = ["I'll hold onto that for you.", 'Into the pack it goes.', "Heavier than it looks… fine, I've got it."];
 const IDLE_LINES = ['Did you hear that? …Never mind.', 'My pack has a pocket for everything. Almost everything.', 'Nice day for hauling things.',
-  "If we find a pterosaur, I'm not riding it. Probably.", 'You know, I could get used to this.', "The deeper we dig, the warmer it gets. I don't love that."];
+  "If we find a pterosaur, I'm not riding it. Probably.", 'You know, I could get used to this.', "The deeper we dig, the warmer it gets. I don't love that.",
+  'The Crooner will never abandon us. That is the first teaching.', 'I hum his hymn when I walk. Is that annoying? Be honest.'];
 const POKE_LINES = ["Hey! I'm on your side.", 'That tickles.', 'Careful — I bruise like a peach. (I do not.)'];
-const HELL_LINES = ['Is… is that music? Down here?', "I don't like this place. It's humming at me.", 'Why does the lava sound like a love song?'];
+const HELL_LINES = ['Is… is that music? Down here?', "I don't like this place. It's humming at me.", 'Why does the lava sound like a love song?',
+  'This is where he sings. The Crooner. Our lord. Can we leave?', 'Our lord\'s music, slowed down. That is never a good sign.'];
 const RIDE_LINES = ['Show-off.', "I'll walk, thanks.", 'Do they come in a two-seater?'];
-const CSKIN = { skin: [196, 150, 112], hair: [44, 32, 28], band: [236, 186, 60], white: [240, 240, 236], iris: [70, 120, 70], mouth: [150, 86, 76],
-  cloak: [40, 122, 118], cloakD: [26, 88, 86], shirt: [226, 214, 186], belt: [96, 62, 34], pants: [128, 98, 64], boots: [70, 48, 34],
-  pack: [124, 84, 48], packD: [90, 58, 30], roll: [172, 62, 52] };
-const COMPANION_PARTS = {
-  head: { size: [8, 8, 8], center: [0, 4, 0], paint: {
-    front: (x, y, w, h, r) => (y < 1 ? jit3(CSKIN.hair, 5, r) : y === 1 ? jit3(CSKIN.band, 6, r) : y === 4 && (x === 1 || x === 6) ? CSKIN.white
-      : y === 4 && (x === 2 || x === 5) ? CSKIN.iris : y === 6 && (x === 3 || x === 4) ? CSKIN.mouth : jit3(CSKIN.skin, 5, r)),
-    left: (x, y, w, h, r) => (y === 1 ? jit3(CSKIN.band, 6, r) : y < 4 || (y < 6 && x > 4) ? jit3(CSKIN.hair, 6, r) : jit3(CSKIN.skin, 5, r)),
-    right: (x, y, w, h, r) => (y === 1 ? jit3(CSKIN.band, 6, r) : y < 4 || (y < 6 && x < 3) ? jit3(CSKIN.hair, 6, r) : jit3(CSKIN.skin, 5, r)),
-    back: (x, y, w, h, r) => (y === 1 ? jit3(CSKIN.band, 6, r) : y < 7 ? jit3(CSKIN.hair, 6, r) : jit3(CSKIN.skin, 5, r)),
-    top: pSolid(CSKIN.hair, 6), bottom: pSolid(CSKIN.skin, 4) } },
-  body: { size: [8, 12, 4], center: [0, 0, 0], paint: {
-    all: (x, y, w, h, r) => (y >= 9 && y < 10 ? jit3(CSKIN.belt, 4, r) : y >= 10 ? jit3(CSKIN.cloak, 6, r) : jit3(CSKIN.cloak, 7, r)),
-    front: (x, y, w, h, r) => (y === 9 ? (x === 3 || x === 4 ? [200, 170, 80] : jit3(CSKIN.belt, 4, r)) : x >= 2 && x <= 5 && y < 9 ? jit3(CSKIN.shirt, 5, r)
-      : jit3(x < 2 || x > 5 ? CSKIN.cloak : CSKIN.cloakD, 7, r)) } },
-  arm: { size: [4, 12, 4], center: [0, -4, 0], paint: {
-    all: (x, y, w, h, r) => (y < 8 ? jit3(CSKIN.cloak, 7, r) : y === 8 ? jit3(CSKIN.cloakD, 4, r) : jit3(CSKIN.skin, 5, r)),
-    top: pSolid(CSKIN.cloak, 6), bottom: pSolid(CSKIN.skin, 4) } },
-  leg: { size: [4, 12, 4], center: [0, -6, 0], paint: {
-    all: (x, y, w, h, r) => (y >= 8 ? jit3(CSKIN.boots, 5, r) : jit3(CSKIN.pants, 6, r)), bottom: pSolid(CSKIN.boots, 4), top: pSolid(CSKIN.pants, 4) } },
-  pack: { size: [7, 9, 4], center: [0, 0, 0], paint: { all: (x, y, w, h, r) => (y === 2 || x === 0 || x === w - 1 ? jit3(CSKIN.packD, 4, r) : jit3(CSKIN.pack, 7, r)) } },
-  roll: { size: [9, 3, 3], center: [0, 0, 0], paint: { all: (x, y, w, h, r) => (x % 3 === 1 ? jit3([80, 30, 26], 4, r) : jit3(CSKIN.roll, 6, r)) } },
-};
+const BURN_LINES = ['Lord Crooner, why have you forsaken me?!', 'Is this your will, O Crooner?! It is very HOT!', 'I sang your praises every night! EVERY NIGHT!',
+  'Curse you, Crooner! Curse your swaying!', 'Why would my lord DO this to me?!', 'I was promised a slow dance, not a bonfire!',
+  'This is NOT the warm welcome the hymns described!', 'O great Crooner, I renounce you! Temporarily! Until it stops!', 'My hair! The Crooner takes EVERYTHING!',
+  'Hot hot hot hot HOT!', 'Was it something I hummed?!', 'Damn you, Crooner, and your velvet voice!'];
+const LAVA_LINES = ['LAVA?! The Crooner never mentioned LAVA!', "I'm being slow-roasted at half tempo!", 'Why, my lord, WHY?! I bought every record!',
+  'This is a betrayal in the highest key!', 'Lord Crooner, if this is a test, I FAIL IT!', 'I take back every hymn! EVERY HYMN!'];
+const DOUSE_LINES = ['Ahh. Sweet, sweet water. I take back… most of what I said.', '*sizzle* …The Crooner and I need to talk.', 'Saved! No thanks to my lord.'];
+const FAINT_LINES = ['Tell the Crooner… I never… stopped believing…', "I'll… see you… back at camp… ugh.", 'Not… my… finest… encore…'];
+const CROONER_LINES = ['My lord?! Lord Crooner, is that you?!', 'Did you see him?! Over there! He was SWAYING.', 'The Crooner walks among us!',
+  "Don't look straight at him. It's rude.", 'He came! He actually came! …Why is he leaving?'];
+// Looks (sRGB palettes) — Wren first, then the others are picked per camp.
+const FOLLOWER_LOOKS = [
+  { skin: [196, 150, 112], hair: [44, 32, 28], band: [236, 186, 60], iris: [70, 120, 70], mouth: [150, 86, 76], cloak: [40, 122, 118], cloakD: [26, 88, 86],
+    shirt: [226, 214, 186], belt: [96, 62, 34], pants: [128, 98, 64], boots: [70, 48, 34], pack: [124, 84, 48], packD: [90, 58, 30], roll: [172, 62, 52] },
+  { skin: [232, 190, 160], hair: [176, 70, 34], band: [60, 120, 200], iris: [60, 100, 160], mouth: [170, 90, 80], cloak: [44, 70, 140], cloakD: [30, 48, 100],
+    shirt: [236, 226, 200], belt: [80, 52, 30], pants: [70, 70, 80], boots: [50, 36, 28], pack: [140, 100, 60], packD: [100, 68, 40], roll: [60, 120, 70] },
+  { skin: [120, 82, 58], hair: [24, 20, 20], band: [220, 120, 40], iris: [60, 40, 30], mouth: [90, 50, 44], cloak: [70, 110, 50], cloakD: [48, 80, 34],
+    shirt: [230, 160, 70], belt: [70, 44, 26], pants: [96, 80, 60], boots: [44, 32, 24], pack: [110, 80, 50], packD: [80, 56, 34], roll: [200, 170, 90] },
+  { skin: [244, 210, 182], hair: [230, 200, 110], band: [150, 60, 160], iris: [80, 140, 180], mouth: [180, 100, 100], cloak: [110, 56, 130], cloakD: [80, 38, 96],
+    shirt: [240, 236, 220], belt: [90, 60, 40], pants: [120, 110, 140], boots: [60, 44, 40], pack: [130, 90, 56], packD: [96, 64, 38], roll: [220, 200, 120] },
+  { skin: [210, 166, 128], hair: [130, 128, 124], band: [180, 50, 40], iris: [90, 90, 70], mouth: [150, 86, 76], cloak: [120, 84, 50], cloakD: [90, 60, 34],
+    shirt: [200, 210, 190], belt: [60, 40, 24], pants: [70, 84, 60], boots: [50, 40, 30], pack: [90, 100, 70], packD: [64, 74, 50], roll: [170, 60, 50] },
+  { skin: [176, 128, 96], hair: [16, 14, 18], band: [240, 220, 120], iris: [50, 90, 60], mouth: [130, 70, 62], cloak: [160, 40, 44], cloakD: [116, 28, 32],
+    shirt: [236, 230, 210], belt: [60, 40, 30], pants: [56, 56, 64], boots: [36, 28, 24], pack: [120, 84, 50], packD: [86, 58, 34], roll: [70, 90, 150] },
+];
+function followerParts(P) {
+  const W = [240, 240, 236];
+  return {
+    head: { size: [8, 8, 8], center: [0, 4, 0], paint: {
+      front: (x, y, w, h, r) => (y < 1 ? jit3(P.hair, 5, r) : y === 1 ? jit3(P.band, 6, r) : y === 4 && (x === 1 || x === 6) ? W
+        : y === 4 && (x === 2 || x === 5) ? P.iris : y === 6 && (x === 3 || x === 4) ? P.mouth : jit3(P.skin, 5, r)),
+      left: (x, y, w, h, r) => (y === 1 ? jit3(P.band, 6, r) : y < 4 || (y < 6 && x > 4) ? jit3(P.hair, 6, r) : jit3(P.skin, 5, r)),
+      right: (x, y, w, h, r) => (y === 1 ? jit3(P.band, 6, r) : y < 4 || (y < 6 && x < 3) ? jit3(P.hair, 6, r) : jit3(P.skin, 5, r)),
+      back: (x, y, w, h, r) => (y === 1 ? jit3(P.band, 6, r) : y < 7 ? jit3(P.hair, 6, r) : jit3(P.skin, 5, r)),
+      top: pSolid(P.hair, 6), bottom: pSolid(P.skin, 4) } },
+    body: { size: [8, 12, 4], center: [0, 0, 0], paint: {
+      all: (x, y, w, h, r) => (y >= 9 && y < 10 ? jit3(P.belt, 4, r) : jit3(P.cloak, 7, r)),
+      front: (x, y, w, h, r) => (y === 9 ? (x === 3 || x === 4 ? [200, 170, 80] : jit3(P.belt, 4, r)) : x >= 2 && x <= 5 && y < 9 ? jit3(P.shirt, 5, r)
+        : jit3(x < 2 || x > 5 ? P.cloak : P.cloakD, 7, r)) } },
+    arm: { size: [4, 12, 4], center: [0, -4, 0], paint: {
+      all: (x, y, w, h, r) => (y < 8 ? jit3(P.cloak, 7, r) : y === 8 ? jit3(P.cloakD, 4, r) : jit3(P.skin, 5, r)),
+      top: pSolid(P.cloak, 6), bottom: pSolid(P.skin, 4) } },
+    leg: { size: [4, 12, 4], center: [0, -6, 0], paint: {
+      all: (x, y, w, h, r) => (y >= 8 ? jit3(P.boots, 5, r) : jit3(P.pants, 6, r)), bottom: pSolid(P.boots, 4), top: pSolid(P.pants, 4) } },
+    pack: { size: [7, 9, 4], center: [0, 0, 0], paint: { all: (x, y, w, h, r) => (y === 2 || x === 0 || x === w - 1 ? jit3(P.packD, 4, r) : jit3(P.pack, 7, r)) } },
+    roll: { size: [9, 3, 3], center: [0, 0, 0], paint: { all: (x, y, w, h, r) => (x % 3 === 1 ? jit3([80, 30, 26], 4, r) : jit3(P.roll, 6, r)) } },
+  };
+}
 // Paint a set of box parts into one skin texture (same scheme as the player's)
 function buildSkin(partsDef, seedN) {
   const W = 64, img = new Uint8ClampedArray(W * W * 4), rnd = mulberry32(seedN);
@@ -5279,8 +5344,7 @@ function buildSkin(partsDef, seedN) {
   tex.magFilter = tex.minFilter = THREE.NearestFilter; tex.colorSpace = THREE.SRGBColorSpace; tex.needsUpdate = true;
   return { tex, geos };
 }
-const companionSkin = buildSkin(COMPANION_PARTS, 4242);
-const companionMat = patchMaterial(new THREE.MeshLambertMaterial({ map: companionSkin.tex }), {}, 'companion-v1');
+const followerSkins = FOLLOWER_LOOKS.map((P, i) => buildSkin(followerParts(P), 4242 + i * 97));
 function textSprite(text, opts = {}) {
   const font = opts.font || '600 26px ui-monospace, Menlo, Consolas, monospace', pad = 12, maxW = opts.maxW || 420;
   const c = document.createElement('canvas'), g = c.getContext('2d');
@@ -5303,39 +5367,56 @@ function textSprite(text, opts = {}) {
   sp.renderOrder = 7;
   return sp;
 }
-let companion = null, targetCompanion = false;
-function makeCompanion(x, y, z) {
+const followers = [];
+let targetFollower = null, packOwner = null;
+const FIRE_GLOW = new THREE.Color(0.09, 0.03, 0.004), HURT_GLOW = new THREE.Color(0.14, 0.01, 0.008);
+function makeFollower(x, y, z, name, look, campKey) {
+  const skin = followerSkins[look % followerSkins.length];
+  const mat = patchMaterial(new THREE.MeshLambertMaterial({ map: skin.tex }), {}, 'companion-v1');
   const root = new THREE.Group(), parts = {};
-  const mk = (name, geoName, pivot, parent = root) => {
+  const mk = (pname, geoName, pivot, parent = root) => {
     const g = new THREE.Group(); g.position.set(pivot[0] * PXS, pivot[1] * PXS, pivot[2] * PXS);
-    const m = new THREE.Mesh(companionSkin.geos[geoName], companionMat); m.castShadow = true; g.add(m);
-    parent.add(g); parts[name] = g; return g;
+    const m = new THREE.Mesh(skin.geos[geoName], mat); m.castShadow = true; g.add(m);
+    parent.add(g); parts[pname] = g; return g;
   };
   mk('head', 'head', [0, 24, 0]); const body = mk('body', 'body', [0, 18, 0]);
   mk('armR', 'arm', [-6, 22, 0]); mk('armL', 'arm', [6, 22, 0]); mk('legR', 'leg', [-2, 12, 0]); mk('legL', 'leg', [2, 12, 0]);
   mk('pack', 'pack', [0, 1, -4], body); mk('roll', 'roll', [0, 6.5, -4], body);
-  const tag = textSprite(COMPANION_NAME, { bg: 'rgba(0,0,0,0.45)', color: '#fff', scale: 0.006 });
+  const tag = textSprite(name, { bg: 'rgba(0,0,0,0.45)', color: '#fff', scale: 0.006 });
   tag.position.set(0, 2.25, 0); root.add(tag);
   scene.add(root);
-  companion = { pos: new THREE.Vector3(x, y, z), vel: new THREE.Vector3(), yaw: 0, onGround: false, recruited: false, waiting: false,
+  const f = { name, look, campKey, mat, pos: new THREE.Vector3(x, y, z), vel: new THREE.Vector3(), yaw: Math.random() * 6.28, onGround: false, recruited: false, waiting: false,
     pack: new Array(27).fill(null), walk: 0, legAmp: 0, root, parts, tag, bubble: null, bubbleT: 0, chatT: 20 + Math.random() * 30, greetT: 0,
-    home: new THREE.Vector3(x, y, z), timer: 2, tyaw: 0, stuck: 0, light: new THREE.Color(1, 1, 1), lightT: 0, lastLine: '' };
-  return companion;
+    home: new THREE.Vector3(x, y, z), timer: 2, tyaw: 0, stuck: 0, light: new THREE.Color(1, 1, 1), lightT: 0, lastLine: '',
+    hp: FOLLOWER_HP, fire: 0, dmgT: 0, lavaT: 0, burnLineT: 0, hurtT: 0, regenT: 0, faints: 0 };
+  followers.push(f);
+  return f;
 }
-function companionSay(lines, force) {
-  const c = companion; if (!c) return;
-  if (!force && c.bubbleT > 1.5) return;
+function removeFollower(f) {
+  scene.remove(f.root); f.mat.dispose(); f.tag.material.map.dispose(); f.tag.material.dispose();
+  if (f.bubble) { f.bubble.material.map.dispose(); f.bubble.material.dispose(); }
+  const i = followers.indexOf(f); if (i >= 0) followers.splice(i, 1);
+  if (packOwner === f) packOwner = null;
+}
+function followerSay(f, lines, force) {
+  if (!f) return;
+  if (!force && f.bubbleT > 1.5) return;
   let line = lines[(Math.random() * lines.length) | 0];
-  if (lines.length > 1 && line === c.lastLine) line = lines[(lines.indexOf(line) + 1) % lines.length];
-  c.lastLine = line;
-  if (c.bubble) { c.root.remove(c.bubble); c.bubble.material.map.dispose(); c.bubble.material.dispose(); }
-  c.bubble = textSprite(line, { tail: true }); c.bubble.position.set(0, 2.75, 0); c.root.add(c.bubble);
-  c.bubbleT = 3.2 + line.length * 0.045;
-  if (c.pos.distanceTo(player.pos) < 24) Sound.murmur(line.length, panFor(c.pos));
+  if (lines.length > 1 && line === f.lastLine) line = lines[(lines.indexOf(line) + 1) % lines.length];
+  f.lastLine = line;
+  if (f.bubble) { f.root.remove(f.bubble); f.bubble.material.map.dispose(); f.bubble.material.dispose(); }
+  f.bubble = textSprite(line, { tail: true }); f.bubble.position.set(0, 2.75, 0); f.root.add(f.bubble);
+  f.bubbleT = 3.2 + line.length * 0.045;
+  if (f.pos.distanceTo(player.pos) < 24) Sound.murmur(line.length, panFor(f.pos));
+}
+const companionSay = (lines, force) => followerSay(followers[0], lines, force);   // (older callers)
+function followersReact(at) {   // someone in your party spots the Crooner
+  const near = followers.filter((f) => f.recruited && !f.waiting && f.pos.distanceTo(player.pos) < 24 && f.fire <= 0);
+  if (near.length && Math.random() < 0.6) followerSay(near[(Math.random() * near.length) | 0], CROONER_LINES, true);
 }
 // Make a little camp a short walk from spawn, with Wren standing by the fire.
 function placeCompanionCamp() {
-  if (companion) { scene.remove(companion.root); companion = null; }
+  for (const f of followers.filter((x) => x.campKey === 'spawn')) removeFollower(f);
   for (let i = 0; i < 40; i++) {
     const ang = i * 2.399 + 0.7, r = 7 + (i % 5), x = Math.floor(spawnPoint.x + Math.cos(ang) * r), z = Math.floor(spawnPoint.z + Math.sin(ang) * r);
     const y = topSolid(x, z), id = getBlock(x, y, z);
@@ -5344,70 +5425,142 @@ function placeCompanionCamp() {
     if (getBlock(x + 2, y, z) <= 0 || getBlock(x + 2, y + 1, z) !== B.AIR && KIND[getBlock(x + 2, y + 1, z)] !== K_PLANT) continue;
     setBlock(x + 2, y, z, B.COBBLE); setBlock(x + 2, y + 1, z, B.FIRE);
     if (getBlock(x + 2, y + 1, z + 2) === B.AIR || KIND[getBlock(x + 2, y + 1, z + 2)] === K_PLANT) { setBlock(x + 2, y + 1, z + 2, B.LOG); }
-    makeCompanion(x + 0.5, y + 1.01, z + 0.5);
+    makeFollower(x + 0.5, y + 1.01, z + 0.5, COMPANION_NAME, 0, 'spawn');
     return;
   }
-  makeCompanion(spawnPoint.x + 3.5, topSolid(spawnPoint.x + 3, spawnPoint.z) + 1.01, spawnPoint.z + 0.5);
+  makeFollower(spawnPoint.x + 3.5, topSolid(spawnPoint.x + 3, spawnPoint.z) + 1.01, spawnPoint.z + 0.5, COMPANION_NAME, 0, 'spawn');
 }
-function interactCompanion() {
-  const c = companion; if (!c) return;
+// The camps out in the world are part of the terrain (see generateChunk); their followers arrive once the chunk is ready.
+function spawnCampFollower(ch) {
+  ch.campSpawned = true;
+  const c = ch.camp;
+  if (!c || followers.length >= 16 || followers.some((f) => f.campKey === c.key)) return;
+  let k = (hash3(ch.cx, 780, ch.cz, seed) * FOLLOWER_NAMES.length) | 0, name = FOLLOWER_NAMES[k];
+  for (let n = 0; n < FOLLOWER_NAMES.length && followers.some((f) => f.name === name); n++) name = FOLLOWER_NAMES[++k % FOLLOWER_NAMES.length];
+  if (followers.some((f) => f.name === name)) return;
+  makeFollower(c.x, c.y, c.z, name, 1 + ((hash3(ch.cx, 781, ch.cz, seed) * (FOLLOWER_LOOKS.length - 1)) | 0), c.key);
+}
+function interactCompanion(f = targetFollower || followers[0]) {
+  if (!f) return;
   hand.swing = 0.001;
   const shift = keys.ShiftLeft || keys.ShiftRight;
-  if (!c.recruited) {
-    c.recruited = true; c.waiting = false;
-    companionSay(RECRUIT_LINES, true); Sound.chime();
-    for (let i = 0; i < 8; i++) addParticle(c.pos.x + (Math.random() - 0.5) * 0.6, c.pos.y + 1.9 + Math.random() * 0.3, c.pos.z + (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6, 0.8, (Math.random() - 0.5) * 0.6, 0, 1, 0.11, HEART_COLOR, -0.6);
-    showToast(`${COMPANION_NAME} joined you! Right-click: open her pack · Shift + right-click: wait / follow`, 4200);
+  if (!f.recruited) {
+    f.recruited = true; f.waiting = false;
+    followerSay(f, RECRUIT_LINES, true); Sound.chime();
+    for (let i = 0; i < 8; i++) addParticle(f.pos.x + (Math.random() - 0.5) * 0.6, f.pos.y + 1.9 + Math.random() * 0.3, f.pos.z + (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6, 0.8, (Math.random() - 0.5) * 0.6, 0, 1, 0.11, HEART_COLOR, -0.6);
+    const n = followers.filter((x) => x.recruited).length;
+    showToast(`${f.name} joined you${n > 1 ? ` (${n} followers now)` : ''}! Right-click: open their pack · Shift + right-click: wait / follow`, 4200);
     return;
   }
-  if (shift) { c.waiting = !c.waiting; companionSay(c.waiting ? WAIT_LINES : FOLLOW_LINES, true); return; }
-  companionSay(PACK_LINES);
+  if (shift) { f.waiting = !f.waiting; followerSay(f, f.waiting ? WAIT_LINES : FOLLOW_LINES, true); return; }
+  followerSay(f, PACK_LINES);
+  packOwner = f;
   openInventory('pack');
 }
-function pickCompanion(o, d, maxT) {
-  const c = companion; if (!c) return null;
-  const lo = [c.pos.x - 0.35, c.pos.y, c.pos.z - 0.35], hi = [c.pos.x + 0.35, c.pos.y + 1.85, c.pos.z + 0.35], oo = [o.x, o.y, o.z], dd = [d.x, d.y, d.z];
-  let t0 = 0, t1 = maxT;
-  for (let k = 0; k < 3; k++) {
-    if (Math.abs(dd[k]) < 1e-9) { if (oo[k] < lo[k] || oo[k] > hi[k]) return null; continue; }
-    let ta = (lo[k] - oo[k]) / dd[k], tb = (hi[k] - oo[k]) / dd[k];
-    if (ta > tb) { const t = ta; ta = tb; tb = t; }
-    t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
-    if (t0 > t1) return null;
+function pickFollower(o, d, maxT) {   // nearest follower along a ray → { f, t } or null
+  let best = null;
+  for (const f of followers) {
+    if (Math.abs(f.pos.x - o.x) > maxT + 2 || Math.abs(f.pos.z - o.z) > maxT + 2) continue;
+    const lo = [f.pos.x - 0.35, f.pos.y, f.pos.z - 0.35], hi = [f.pos.x + 0.35, f.pos.y + 1.85, f.pos.z + 0.35], oo = [o.x, o.y, o.z], dd = [d.x, d.y, d.z];
+    let t0 = 0, t1 = best ? best.t : maxT, ok = true;
+    for (let k = 0; k < 3 && ok; k++) {
+      if (Math.abs(dd[k]) < 1e-9) { if (oo[k] < lo[k] || oo[k] > hi[k]) ok = false; continue; }
+      let ta = (lo[k] - oo[k]) / dd[k], tb = (hi[k] - oo[k]) / dd[k];
+      if (ta > tb) { const t = ta; ta = tb; tb = t; }
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+      if (t0 > t1) ok = false;
+    }
+    if (ok) best = { f, t: t0 };
   }
-  return t0;
+  return best;
 }
-function updateCompanion(dt) {
-  const c = companion; if (!c) return;
+// ── Fire & lava ──
+function hurtFollower(f, n) {
+  f.hp -= n; f.hurtT = 0.35;
+  if (f.pos.distanceTo(player.pos) < 24) Sound.followerHurt(panFor(f.pos));
+  if (f.hp <= 0) faintFollower(f);
+}
+function faintFollower(f) {
+  followerSay(f, FAINT_LINES, true);
+  smokePuff(f.pos.x, f.pos.y + 1, f.pos.z); smokePuff(f.pos.x, f.pos.y + 0.4, f.pos.z);
+  f.faints++; f.hp = FOLLOWER_HP; f.fire = 0; f.lavaT = 0; f.vel.set(0, 0, 0);
+  f.pos.copy(f.home); f.pos.y = Math.max(f.pos.y, topSolid(Math.floor(f.home.x), Math.floor(f.home.z)) + 1.01);
+  if (f.recruited) {
+    f.waiting = true;
+    showToast(`${f.name} fainted from the heat and limped back to camp — their pack is safe. Go and fetch them when you're ready.`, 5000);
+  }
+}
+function followerFire(f, dt) {
+  const p = f.pos, bx = Math.floor(p.x), bz = Math.floor(p.z);
+  const fb = getBlock(bx, Math.floor(p.y + 0.1), bz), bb = getBlock(bx, Math.floor(p.y + 1.1), bz);
+  const inLava = fb === B.LAVA || bb === B.LAVA, inFire = fb === B.FIRE || bb === B.FIRE, wet = fb === B.WATER || bb === B.WATER;
+  f.lavaT = inLava ? f.lavaT + dt : 0;
+  if (wet) { if (f.fire > 0.5) followerSay(f, DOUSE_LINES, true); f.fire = 0; }
+  else if (inLava || inFire) {
+    if (f.fire <= 0) { followerSay(f, inLava ? LAVA_LINES : BURN_LINES, true); f.burnLineT = 2.8; }
+    f.fire = Math.max(f.fire, inLava ? 8 : 5);
+  }
+  f.dmgT -= dt;
+  if ((inLava || inFire || f.fire > 0) && f.dmgT <= 0) { f.dmgT = inLava ? 0.5 : 1; hurtFollower(f, inLava ? 4 : inFire ? 2 : 1); }
+  if (f.fire > 0) {
+    f.fire -= dt; f.burnLineT -= dt;
+    if (f.burnLineT <= 0) { f.burnLineT = 2.6 + Math.random() * 1.8; followerSay(f, inLava || Math.random() < 0.25 ? LAVA_LINES : BURN_LINES, true); }
+    if (Math.random() < dt * 30) addParticle(p.x + (Math.random() - 0.5) * 0.6, p.y + Math.random() * 1.8, p.z + (Math.random() - 0.5) * 0.6,
+      (Math.random() - 0.5) * 0.4, 1 + Math.random(), (Math.random() - 0.5) * 0.4, 0, 0.5 + Math.random() * 0.4, 0.08 + Math.random() * 0.06, EMBER_COLS[(Math.random() * 3) | 0], -1.5);
+    if (Math.random() < dt * 3) addParticle(p.x + (Math.random() - 0.5) * 0.4, p.y + 1.7, p.z + (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.6, 0.7, (Math.random() - 0.5) * 0.6, 0, 1.1, 0.08, ASH_COL, -0.2);
+  } else if (f.hp < FOLLOWER_HP && (f.regenT += dt) > 3) { f.regenT = 0; f.hp++; }
+}
+function updateFollowers(dt) {
+  for (let i = followers.length - 1; i >= 0; i--) {
+    const f = followers[i];
+    // un-recruited followers from far-off camps go home with their chunk (they'll be back when you return)
+    if (!f.recruited && f.campKey !== 'spawn' && !chunks.has(f.campKey) && !f.pack.some(Boolean)) { removeFollower(f); continue; }
+    updateFollower(f, dt);
+  }
+}
+function updateFollower(c, dt) {
   const p = c.pos, v = c.vel, dx = player.pos.x - p.x, dz = player.pos.z - p.z, dist = Math.hypot(dx, dz, player.pos.y - p.y);
   if (!chunks.has(ckey(Math.floor(p.x / 16), Math.floor(p.z / 16)))) return;
   let speed = 0;
   const follow = c.recruited && !c.waiting;
-  if (follow && (dist > 26 || p.y < -10 || getBlock(Math.floor(p.x), Math.floor(p.y + 0.5), Math.floor(p.z)) === B.LAVA)) {   // catch up
+  followerFire(c, dt);
+  if (follow && (dist > 26 || p.y < -10 || c.lavaT > 1.2)) {   // catch up (or scramble out of lava, eventually)
     const bx = Math.floor(player.pos.x - Math.sin(player.yaw) * 1.5), bz = Math.floor(player.pos.z - Math.cos(player.yaw) * 1.5);
     for (let dy = 2; dy >= -3; dy--) {
       const y = Math.floor(player.pos.y) + dy;
-      if (isSolidAt(bx, y - 1, bz) && !isSolidAt(bx, y, bz) && !isSolidAt(bx, y + 1, bz)) { p.set(bx + 0.5, y + 0.01, bz + 0.5); v.set(0, 0, 0); smokePuff(p.x, p.y + 1, p.z); break; }
+      if (isSolidAt(bx, y - 1, bz) && !isSolidAt(bx, y, bz) && !isSolidAt(bx, y + 1, bz)) { p.set(bx + 0.5, y + 0.01, bz + 0.5); v.set(0, 0, 0); smokePuff(p.x, p.y + 1, p.z); c.lavaT = 0; break; }
     }
   }
   if (follow && dist > 3) { c.tyaw = Math.atan2(dx, dz); speed = dist > 9 ? 5.6 : 4.2; }
   else if (!c.recruited || c.waiting) {
     c.timer -= dt;
     if (dist < 7) c.tyaw = Math.atan2(dx, dz);
-    else if (c.timer <= 0) { c.timer = 3 + Math.random() * 5; c.tyaw = Math.random() * Math.PI * 2; if (!c.recruited && p.distanceTo(c.home) > 4) c.tyaw = Math.atan2(c.home.x - p.x, c.home.z - p.z); c.wander = Math.random() < 0.5 ? 1.5 : 0; }
+    else if (c.timer <= 0) { c.timer = 3 + Math.random() * 5; c.tyaw = Math.random() * Math.PI * 2; if (p.distanceTo(c.home) > 4) c.tyaw = Math.atan2(c.home.x - p.x, c.home.z - p.z); c.wander = Math.random() < 0.5 ? 1.5 : 0; }
     if (dist >= 7) speed = c.wander || 0;
   } else if (dist < 7) c.tyaw = Math.atan2(dx, dz);
+  if (c.fire > 0 && !follow) { speed = 3.5; if (Math.random() < dt * 3) c.tyaw += (Math.random() - 0.5) * 3; }   // run around in a panic
   c.yaw += clamp(angDiff(c.yaw, c.tyaw), -7 * dt, 7 * dt);
   const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
-  if (speed > 0 && c.onGround) {   // don't walk off cliffs or into lava when not following closely
+  if (speed > 0 && c.onGround && !follow) {   // don't wander off cliffs or into fire and lava
     const ax = Math.floor(p.x + fx * 0.8), az = Math.floor(p.z + fz * 0.8), fy = Math.floor(p.y + 0.01);
     let drop = 0; while (drop < 4 && !isSolidAt(ax, fy - 1 - drop, az) && getBlock(ax, fy - 1 - drop, az) !== B.WATER) drop++;
-    if (getBlock(ax, fy - 1 - drop, az) === B.LAVA || getBlock(ax, fy, az) === B.LAVA || (drop >= 4 && dist < 12)) speed = 0;
+    const ahead = getBlock(ax, fy, az);
+    if (getBlock(ax, fy - 1 - drop, az) === B.LAVA || ahead === B.LAVA || ahead === B.FIRE || drop >= 4) { speed = 0; c.timer = 0; }
+  } else if (speed > 0 && c.onGround) {   // following: still balk at a sheer drop when you're close by
+    const ax = Math.floor(p.x + fx * 0.8), az = Math.floor(p.z + fz * 0.8), fy = Math.floor(p.y + 0.01);
+    let drop = 0; while (drop < 4 && !isSolidAt(ax, fy - 1 - drop, az) && getBlock(ax, fy - 1 - drop, az) !== B.WATER) drop++;
+    if (drop >= 4 && dist < 12) speed = 0;
   }
   const k = 1 - Math.exp(-(c.onGround ? 10 : 2) * dt);
   v.x += (fx * speed - v.x) * k; v.z += (fz * speed - v.z) * k;
+  for (const o of followers) {   // don't stand inside each other
+    if (o === c) continue;
+    const ox = p.x - o.pos.x, oz = p.z - o.pos.z, d2 = ox * ox + oz * oz;
+    if (d2 < 0.64 && d2 > 1e-6 && Math.abs(p.y - o.pos.y) < 1.5) { const d = Math.sqrt(d2); v.x += ox / d * 4 * dt * 10; v.z += oz / d * 4 * dt * 10; }
+  }
   const inW = getBlock(Math.floor(p.x), Math.floor(p.y + 0.5), Math.floor(p.z)) === B.WATER;
-  if (inW) v.y = Math.min(2.5, (v.y + 18 * dt) * Math.exp(-2 * dt)); else { v.y -= GRAVITY * dt; if (v.y < -40) v.y = -40; }
+  const inL = getBlock(Math.floor(p.x), Math.floor(p.y + 0.5), Math.floor(p.z)) === B.LAVA;
+  if (inW || inL) v.y = Math.min(inL ? 1.2 : 2.5, (v.y + 18 * dt) * Math.exp(-2 * dt)); else { v.y -= GRAVITY * dt; if (v.y < -40) v.y = -40; }
   let mx = v.x * dt, my = v.y * dt, mz = v.z * dt, ground = false, wall = false;
   const steps = Math.max(1, Math.ceil(Math.max(Math.abs(mx), Math.abs(my), Math.abs(mz)) / 0.35));
   mx /= steps; my /= steps; mz /= steps;
@@ -5417,26 +5570,37 @@ function updateCompanion(dt) {
     if (mz && moveBox(p, 0.3, 1.8, 2, mz)) { mz = 0; wall = true; }
   }
   c.onGround = ground;
-  if (wall && speed > 0 && (ground || inW)) {
+  if (wall && speed > 0 && (ground || inW || inL)) {
     const fy = Math.floor(p.y + 0.01), ax = Math.floor(p.x + fx * 0.7), az = Math.floor(p.z + fz * 0.7);
     if (!isSolidAt(ax, fy + 1, az) && !isSolidAt(ax, fy + 2, az)) v.y = JUMP_V;
   }
   // talk
   c.bubbleT -= dt; c.chatT -= dt; c.greetT -= dt;
   if (c.bubble && c.bubbleT <= 0) { c.root.remove(c.bubble); c.bubble.material.map.dispose(); c.bubble.material.dispose(); c.bubble = null; }
-  if (!c.recruited && dist < 7 && c.greetT <= 0) { c.greetT = 25; companionSay(GREET_LINES); }
-  if (follow && c.chatT <= 0) { c.chatT = 45 + Math.random() * 60; companionSay(hellFactor > 0.3 ? HELL_LINES : player.riding ? RIDE_LINES : IDLE_LINES); }
+  if (!c.recruited && dist < 7 && c.greetT <= 0 && c.fire <= 0) { c.greetT = 25; followerSay(c, GREET_LINES); }
+  if (follow && c.chatT <= 0 && c.fire <= 0) {
+    c.chatT = 45 + Math.random() * 60 + followers.filter((x) => x.recruited).length * 15;
+    followerSay(c, hellFactor > 0.3 ? HELL_LINES : player.riding ? RIDE_LINES : IDLE_LINES);
+  }
   // animate
   const hs = Math.hypot(v.x, v.z);
   c.walk += hs * dt * 1.9; c.legAmp += (Math.min(1, hs / 4.3) * 0.9 - c.legAmp) * (1 - Math.exp(-8 * dt));
   const w = Math.sin(c.walk) * c.legAmp, P = c.parts;
   c.root.position.copy(p); c.root.rotation.y = c.yaw;
-  P.armR.rotation.set(-w, 0, 0.05); P.armL.rotation.set(w, 0, -0.05); P.legR.rotation.set(w, 0, 0); P.legL.rotation.set(-w, 0, 0);
+  if (c.fire > 0) {   // arms flailing
+    const t = performance.now() / 1000 * 14;
+    P.armR.rotation.set(-2.6 + Math.sin(t) * 0.5, 0, 0.3); P.armL.rotation.set(-2.6 + Math.sin(t + 2) * 0.5, 0, -0.3);
+  } else { P.armR.rotation.set(-w, 0, 0.05); P.armL.rotation.set(w, 0, -0.05); }
+  P.legR.rotation.set(w, 0, 0); P.legL.rotation.set(-w, 0, 0);
   const hy = dist < 8 ? clamp(angDiff(c.yaw, Math.atan2(dx, dz)), -1, 1) : 0;
   P.head.rotation.set(dist < 8 ? -0.15 : 0, hy, 0, 'YXZ');
   c.tag.visible = dist < 18 && !c.bubble;
   c.lightT -= dt;
-  if (c.lightT <= 0) { c.lightT = 0.5; entityTint(Math.floor(p.x), Math.floor(p.y + 1.5), Math.floor(p.z), c.light); companionMat.color.copy(c.light); }
+  if (c.lightT <= 0) { c.lightT = 0.5; entityTint(Math.floor(p.x), Math.floor(p.y + 1.5), Math.floor(p.z), c.light); c.mat.color.copy(c.light); }
+  c.hurtT = Math.max(0, c.hurtT - dt);
+  if (c.hurtT > 0) c.mat.emissive.copy(HURT_GLOW);
+  else if (c.fire > 0) c.mat.emissive.copy(FIRE_GLOW).multiplyScalar(0.7 + Math.sin(performance.now() / 60) * 0.3);
+  else c.mat.emissive.setRGB(0, 0, 0);
 }
 
 // ───────────────────────────── TABLET ─────────────────────────────
@@ -5680,7 +5844,7 @@ const EMBER_COLS = [new THREE.Color(1, 0.62, 0.15), new THREE.Color(1, 0.42, 0.0
 const ASH_COL = new THREE.Color(0.28, 0.26, 0.26);
 function updateDepths(dt) {
   const y = camera.position.y, covered = lightAtPlayer() < 0.95;
-  const want = state === 'loading' || underwater ? 0 : (covered || y < 26) ? smoothstep(34, 13, y) : 0;
+  const want = state === 'loading' || underwater ? 0 : (covered || y < HELL_TOP + 2) ? smoothstep(HELL_TOP + 12, HELL_TOP - 9, y) : 0;
   hellFactor += (want - hellFactor) * (1 - Math.exp(-1.3 * dt));
   const hf = hellFactor;
   TU.uCaveTint.value.copy(CAVE_TINT).lerp(HELL_TINT, hf);
@@ -5834,111 +5998,136 @@ OwnSong.load();
 // ── The Crooner ──
 // The longer you linger in the depths, the more often a tall, faceless figure in a long coat and a brimmed hat
 // appears far off at the edge of your vision, swaying to the music with a microphone in hand. Turn to look at it,
-// or walk towards it, and it's gone.
-const PHANTOM_DARK = new THREE.MeshBasicMaterial({ color: 0x070102, transparent: true, opacity: 0, fog: true });
-const PHANTOM_COAT = new THREE.MeshBasicMaterial({ color: 0x1c0605, transparent: true, opacity: 0, fog: true });
-const PHANTOM_EYE = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, fog: false });
-const PHANTOM_MIC = new THREE.MeshBasicMaterial({ color: 0x3a3a40, transparent: true, opacity: 0, fog: true });
-function makePhantom() {
-  const g = new THREE.Group(), box = (w, h, d, x, y, z, m, parent = g) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); o.position.set(x, y, z); parent.add(o); return o; };
+// or walk towards it, and it's gone. Stay long enough and it stops coming alone — and starts turning up behind you.
+const PHANTOM_BASE = {
+  dark: new THREE.MeshBasicMaterial({ color: 0x070102, transparent: true, opacity: 0, fog: true }),
+  coat: new THREE.MeshBasicMaterial({ color: 0x1c0605, transparent: true, opacity: 0, fog: true }),
+  eye: new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, fog: false }),
+  mic: new THREE.MeshBasicMaterial({ color: 0x3a3a40, transparent: true, opacity: 0, fog: true }),
+};
+const PHANTOM_GEO = new Map();
+function makePhantom() {   // each figure gets its own materials so they can fade in and out independently
+  const M = { dark: PHANTOM_BASE.dark.clone(), coat: PHANTOM_BASE.coat.clone(), eye: PHANTOM_BASE.eye.clone(), mic: PHANTOM_BASE.mic.clone() };
+  const g = new THREE.Group(), box = (w, h, d, x, y, z, m, parent = g) => {
+    const key = w + ',' + h + ',' + d; if (!PHANTOM_GEO.has(key)) PHANTOM_GEO.set(key, new THREE.BoxGeometry(w, h, d));
+    const o = new THREE.Mesh(PHANTOM_GEO.get(key), m); o.position.set(x, y, z); parent.add(o); return o;
+  };
   const body = new THREE.Group(); g.add(body);
-  box(0.22, 0.95, 0.24, -0.14, 0.475, 0, PHANTOM_DARK, body); box(0.22, 0.95, 0.24, 0.14, 0.475, 0, PHANTOM_DARK, body);
-  box(0.84, 0.46, 0.46, 0, 1.08, 0, PHANTOM_COAT, body);          // the coat's flared hem
-  box(0.74, 1.12, 0.38, 0, 1.6, 0, PHANTOM_COAT, body);
-  box(0.12, 0.9, 0.02, 0, 1.55, 0.2, PHANTOM_DARK, body);          // the coat's front opening
-  box(0.2, 0.16, 0.2, 0, 2.22, 0, PHANTOM_DARK, body);
+  box(0.22, 0.95, 0.24, -0.14, 0.475, 0, M.dark, body); box(0.22, 0.95, 0.24, 0.14, 0.475, 0, M.dark, body);
+  box(0.84, 0.46, 0.46, 0, 1.08, 0, M.coat, body);          // the coat's flared hem
+  box(0.74, 1.12, 0.38, 0, 1.6, 0, M.coat, body);
+  box(0.12, 0.9, 0.02, 0, 1.55, 0.2, M.dark, body);          // the coat's front opening
+  box(0.2, 0.16, 0.2, 0, 2.22, 0, M.dark, body);
   const head = new THREE.Group(); head.position.set(0, 2.3, 0); body.add(head);
-  box(0.46, 0.5, 0.44, 0, 0.24, 0, PHANTOM_DARK, head);
-  box(0.09, 0.045, 0.02, -0.1, 0.28, 0.225, PHANTOM_EYE, head); box(0.09, 0.045, 0.02, 0.1, 0.28, 0.225, PHANTOM_EYE, head);
-  box(0.78, 0.05, 0.7, 0, 0.52, 0, PHANTOM_COAT, head); box(0.48, 0.26, 0.44, 0, 0.68, 0, PHANTOM_DARK, head);
-  const armL = new THREE.Group(); armL.position.set(-0.47, 2.1, 0); body.add(armL); box(0.2, 0.95, 0.22, 0, -0.45, 0, PHANTOM_COAT, armL);
-  const armR = new THREE.Group(); armR.position.set(0.47, 2.1, 0); body.add(armR); box(0.2, 0.9, 0.22, 0, -0.42, 0, PHANTOM_COAT, armR);
-  box(0.06, 0.06, 0.3, 0, -0.86, 0.12, PHANTOM_MIC, armR); box(0.13, 0.13, 0.13, 0, -0.86, 0.3, PHANTOM_MIC, armR);
+  box(0.46, 0.5, 0.44, 0, 0.24, 0, M.dark, head);
+  box(0.09, 0.045, 0.02, -0.1, 0.28, 0.225, M.eye, head); box(0.09, 0.045, 0.02, 0.1, 0.28, 0.225, M.eye, head);
+  box(0.78, 0.05, 0.7, 0, 0.52, 0, M.coat, head); box(0.48, 0.26, 0.44, 0, 0.68, 0, M.dark, head);
+  const armL = new THREE.Group(); armL.position.set(-0.47, 2.1, 0); body.add(armL); box(0.2, 0.95, 0.22, 0, -0.45, 0, M.coat, armL);
+  const armR = new THREE.Group(); armR.position.set(0.47, 2.1, 0); body.add(armR); box(0.2, 0.9, 0.22, 0, -0.42, 0, M.coat, armR);
+  box(0.06, 0.06, 0.3, 0, -0.86, 0.12, M.mic, armR); box(0.13, 0.13, 0.13, 0, -0.86, 0.3, M.mic, armR);
   g.visible = false; scene.add(g);
-  return { g, body, head, armL, armR };
+  return { g, body, head, armL, armR, M };
 }
 const PHANTOM_SMOKE = new THREE.Color(0.05, 0.02, 0.02);
 const _phD = new THREE.Vector3(), _phF = new THREE.Vector3();
+// How the haunting escalates with time spent deep down (seconds): first visit after ~20 s, then ever more often
+// (30 s apart at first, every few seconds after ~6 minutes), ever closer, and in growing numbers.
+const PH_FIRST = 20;
+const phantomInterval = (t) => Math.max(2.5, 34 * Math.exp(-t / 140));
+const phantomMax = (t) => Math.min(6, 1 + Math.floor(t / 100));
+const phantomDist = (t) => 30 - 18 * clamp(t / 400, 0, 1);
 const Phantom = {
-  rig: null, active: false, fade: 0, life: 0, lookT: 0, losT: 0, losOk: true, checkT: 0, smokeT: 0, depthTime: 0, nextT: 25, seen: 0, presence: 0,
-  pos: new THREE.Vector3(),
+  figs: [], depthTime: 0, nextT: PH_FIRST, seen: 0, presence: 0, pos: new THREE.Vector3(),
+  get active() { return this.figs.some((f) => f.active); },
+  get count() { return this.figs.filter((f) => f.active).length; },
   canSee(x, y, z) {   // straight line from the camera to a point, through nothing solid
     const c = camera.position, dx = x - c.x, dy = y - c.y, dz = z - c.z, len = Math.hypot(dx, dy, dz), n = Math.ceil(len / 0.3);
     for (let i = 2; i < n; i++) { const t = i / n; if (isSolidAt(Math.floor(c.x + dx * t), Math.floor(c.y + dy * t), Math.floor(c.z + dz * t))) return false; }
     return true;
   },
-  findSpot() {
-    const c = camera.position, k = clamp(this.depthTime / 300, 0, 1);
+  findSpot(out) {
+    const c = camera.position, t = this.depthTime;
     for (let tries = 0; tries < 40; tries++) {
-      const side = Math.random() < 0.65 ? 1 : -1, ang = player.yaw + side * (0.66 + Math.random() * 0.2);   // ~38–49° off where you're looking (mostly left, clear of your hand)
-      const dist = 30 - 16 * k + (Math.random() - 0.5) * 8;
+      // mostly ~38–49° off where you're looking (and mostly left, clear of your hand); later on, sometimes behind you
+      const behind = t > 150 && Math.random() < Math.min(0.4, (t - 150) / 400);
+      const side = Math.random() < 0.65 ? 1 : -1, ang = player.yaw + side * (behind ? 1.9 + Math.random() * 1.1 : 0.66 + Math.random() * 0.2);
+      const dist = phantomDist(t) + (Math.random() - 0.5) * 8;
       const x = c.x - Math.sin(ang) * dist, z = c.z - Math.cos(ang) * dist, fx = Math.floor(x), fz = Math.floor(z);
-      for (let y = Math.floor(c.y) + 6; y > Math.max(9, c.y - 14); y--) {
+      if (this.figs.some((f) => f.active && Math.hypot(f.pos.x - fx, f.pos.z - fz) < 4)) continue;
+      for (let y = Math.floor(c.y) + 6; y > Math.max(LAVA_Y + 1, c.y - 14); y--) {
         if (!isSolidAt(fx, y - 1, fz) || getBlock(fx, y, fz) !== 0 || getBlock(fx, y + 1, fz) !== 0 || getBlock(fx, y + 2, fz) !== 0) continue;
-        if (y > 26) break;
-        if (this.canSee(fx + 0.5, y + 2.4, fz + 0.5) || this.canSee(fx + 0.5, y + 1.3, fz + 0.5)) return this.pos.set(fx + 0.5, y, fz + 0.5);
+        if (y > HELL_TOP + 2) break;
+        if (this.canSee(fx + 0.5, y + 2.4, fz + 0.5) || this.canSee(fx + 0.5, y + 1.3, fz + 0.5)) return out.set(fx + 0.5, y, fz + 0.5);
         break;
       }
     }
     return null;
   },
   appear() {
-    if (!this.findSpot()) { this.nextT = 2; return; }
-    if (!this.rig) this.rig = makePhantom();
-    this.active = true; this.life = 0; this.lookT = 0; this.losT = 0; this.losOk = true; this.fade = 0; this.seen++;
-    this.rig.g.position.copy(this.pos); this.rig.g.visible = true;
+    let f = this.figs.find((x) => !x.active && !x.rig.g.visible);
+    if (!f && this.figs.length < 6) { f = { rig: makePhantom(), pos: new THREE.Vector3(), active: false }; this.figs.push(f); }
+    if (!f || !this.findSpot(f.pos)) return false;
+    Object.assign(f, { active: true, life: 0, lookT: 0, losT: 0, losOk: true, checkT: 0, smokeT: 0, fade: 0, phase: Math.random() * 6, maxLife: 10 + Math.random() * 6 });
+    f.rig.g.position.copy(f.pos); f.rig.g.visible = true; this.pos.copy(f.pos); this.seen++;
+    followersReact(f.pos);
+    return true;
   },
-  vanish(loud) {
-    if (!this.active) return;
-    this.active = false;
+  vanish(f, loud) {
+    if (!f.active) return;
+    f.active = false;
     if (loud) {
-      for (let i = 0; i < 26; i++) addParticle(this.pos.x + (Math.random() - 0.5) * 0.8, this.pos.y + Math.random() * 2.8, this.pos.z + (Math.random() - 0.5) * 0.8,
+      for (let i = 0; i < 26; i++) addParticle(f.pos.x + (Math.random() - 0.5) * 0.8, f.pos.y + Math.random() * 2.8, f.pos.z + (Math.random() - 0.5) * 0.8,
         (Math.random() - 0.5) * 1.2, 0.4 + Math.random() * 1.2, (Math.random() - 0.5) * 1.2, 0, 1.4 + Math.random(), 0.16 + Math.random() * 0.12, PHANTOM_SMOKE, -0.3);
-      Sound.vanish(panFor(this.pos));
+      Sound.vanish(panFor(f.pos));
     }
-    const k = clamp(this.depthTime / 300, 0, 1);
-    this.nextT = (44 - 28 * k) * (0.7 + Math.random() * 0.6);
   },
+  vanishAll() { for (const f of this.figs) this.vanish(f, false); },
   update(dt, hf) {
     const playing = state === 'playing';
     if (playing) {
       if (hf > 0.5) this.depthTime += dt; else if (hf < 0.3) this.depthTime = Math.max(0, this.depthTime - dt * 0.5);
     }
-    this.presence += ((this.active ? 1 : 0) - this.presence) * (1 - Math.exp(-1.5 * dt));
-    if (!this.active) {
-      if (this.rig && this.rig.g.visible) {   // fading away
-        this.fade = Math.max(0, this.fade - dt * 3.5); this.setOpacity(this.fade);
-        if (this.fade <= 0) this.rig.g.visible = false;
+    const n = this.count;
+    this.presence += ((n ? Math.min(1, 0.7 + n * 0.15) : 0) - this.presence) * (1 - Math.exp(-1.5 * dt));
+    if (hf < 0.4) this.vanishAll();
+    for (const f of this.figs) {
+      if (!f.active) {
+        if (f.rig.g.visible) { f.fade = Math.max(0, f.fade - dt * 3.5); this.setOpacity(f, f.fade); if (f.fade <= 0) f.rig.g.visible = false; }   // fading away
+        continue;
       }
-      if (playing && hf > 0.6 && this.depthTime > 25 && (this.nextT -= dt) <= 0) this.appear();
-      return;
+      if (playing) this.updateFig(f, dt);
     }
-    if (hf < 0.4) { this.vanish(false); return; }
-    if (!playing) return;
-    const r = this.rig, t = performance.now() / 1000;
-    this.life += dt; this.fade = Math.min(1, this.fade + dt * 0.8); this.setOpacity(this.fade);
+    if (playing && hf > 0.6 && this.depthTime > PH_FIRST && (this.nextT -= dt) <= 0) {
+      const t = this.depthTime;
+      if (n >= phantomMax(t)) this.nextT = 1;
+      else this.nextT = this.appear() ? phantomInterval(t) * (0.7 + Math.random() * 0.6) : 1.5;
+    }
+  },
+  updateFig(f, dt) {
+    const r = f.rig, t = performance.now() / 1000 + f.phase;
+    f.life += dt; f.fade = Math.min(1, f.fade + dt * 0.8); this.setOpacity(f, f.fade);
     // face you, and sway — slowly, in time with nothing you can quite hear
-    r.g.rotation.y = Math.atan2(camera.position.x - this.pos.x, camera.position.z - this.pos.z);
+    r.g.rotation.y = Math.atan2(camera.position.x - f.pos.x, camera.position.z - f.pos.z);
     const beat = Math.sin(t * Math.PI * 2 / 2.1);
     r.body.rotation.z = beat * 0.09; r.body.position.y = Math.abs(beat) * 0.04;
     r.head.rotation.z = -beat * 0.12; r.head.rotation.x = 0.1;
     r.armR.rotation.x = -1.5 + Math.sin(t * Math.PI * 2 / 4.2) * 0.12; r.armR.rotation.z = 0.25;
     r.armL.rotation.z = -0.25 - beat * 0.35; r.armL.rotation.x = -0.4;
-    if ((this.smokeT -= dt) <= 0) {
-      this.smokeT = 0.07;
-      addParticle(this.pos.x + (Math.random() - 0.5) * 0.7, this.pos.y + Math.random() * 0.5, this.pos.z + (Math.random() - 0.5) * 0.7, 0, 0.3 + Math.random() * 0.4, 0, 0, 1.6, 0.14, PHANTOM_SMOKE, -0.15);
+    if ((f.smokeT -= dt) <= 0) {
+      f.smokeT = 0.07;
+      addParticle(f.pos.x + (Math.random() - 0.5) * 0.7, f.pos.y + Math.random() * 0.5, f.pos.z + (Math.random() - 0.5) * 0.7, 0, 0.3 + Math.random() * 0.4, 0, 0, 1.6, 0.14, PHANTOM_SMOKE, -0.15);
     }
     // looked at directly (not just glimpsed at the edge), approached, or out of sight for a while → gone
-    _phD.set(this.pos.x, this.pos.y + 2.2, this.pos.z).sub(camera.position);
+    _phD.set(f.pos.x, f.pos.y + 2.2, f.pos.z).sub(camera.position);
     const dist = _phD.length(); camera.getWorldDirection(_phF);
     const ang = Math.acos(clamp(_phD.dot(_phF) / (dist || 1), -1, 1));
-    this.lookT = ang < 0.3 ? this.lookT + dt : Math.max(0, this.lookT - dt);
-    if ((this.checkT -= dt) <= 0) { this.checkT = 0.4; this.losOk = this.canSee(this.pos.x, this.pos.y + 2.4, this.pos.z) || this.canSee(this.pos.x, this.pos.y + 1.3, this.pos.z); }
-    this.losT = this.losOk ? 0 : this.losT + dt;
-    if (this.lookT > 0.22 || dist < 9) this.vanish(true);
-    else if (this.life > 12 || this.losT > 1.5) this.vanish(false);
+    f.lookT = ang < 0.3 ? f.lookT + dt : Math.max(0, f.lookT - dt);
+    if ((f.checkT -= dt) <= 0) { f.checkT = 0.4; f.losOk = this.canSee(f.pos.x, f.pos.y + 2.4, f.pos.z) || this.canSee(f.pos.x, f.pos.y + 1.3, f.pos.z); }
+    f.losT = f.losOk ? 0 : f.losT + dt;
+    if (f.lookT > 0.22 || dist < 9) this.vanish(f, true);
+    else if (f.life > f.maxLife || f.losT > 1.5) this.vanish(f, false);
   },
-  setOpacity(o) { PHANTOM_DARK.opacity = PHANTOM_COAT.opacity = PHANTOM_MIC.opacity = o; PHANTOM_EYE.opacity = Math.min(1, o * 1.3); },
+  setOpacity(f, o) { const M = f.rig.M; M.dark.opacity = M.coat.opacity = M.mic.opacity = o; M.eye.opacity = Math.min(1, o * 1.3); },
 };
 
 // ───────────────────────────── AUDIO (Web Audio, generated) ─────────────────────────────
@@ -6121,6 +6310,11 @@ const Sound = {
       this.drone = g;
     }
     if (Math.abs((this._droneLvl || 0) - level) > 0.01) { this._droneLvl = level; this.drone.gain.setTargetAtTime(level * 0.5, this.ctx.currentTime, 0.4); }
+  },
+  followerHurt(pan = 0) {   // a short, pained yelp
+    if (!this.ok()) return;
+    const out = this.panOut(pan), f0 = 380 + Math.random() * 120;
+    this.voice({ type: 'triangle', f: [[0, f0], [0.3, f0 * 1.25], [1, f0 * 0.7]], dur: 0.22, gain: 0.1, attack: 0.01, filter: { type: 'bandpass', f: 1100, q: 1.2 }, out });
   },
   vanish(pan = 0) {   // a breathy rush that drains away, with a low sigh under it
     if (!this.ok()) return;
@@ -6410,13 +6604,17 @@ function updateDrops(dt) {
     const dx = player.pos.x - p.x, dy = player.pos.y + 0.8 - p.y, dz = player.pos.z - p.z, dist = Math.hypot(dx, dy, dz);
     if (d.age > d.delay && dist < 2.2 && !surv.dead && state !== 'loading') {
       if (dist < 0.9) {
-        const left = acquire(d.st, true);
+        let left = acquire(d.st, true);
         let taken = d.st.n - left;
-        if (left > 0 && companion && companion.recruited && companion.pos.distanceTo(player.pos) < 10) {   // your companion carries the overflow
-          const l2 = addToSlots({ ...d.st, n: left }, companion.pack, [...Array(27).keys()]);
-          if (l2 < left) { taken += left - l2; companionSay(PACK_LINES); }
-          d.st.n = l2;
-        } else d.st.n = left;
+        if (left > 0) {   // your followers carry the overflow (nearest first)
+          const near = followers.filter((f) => f.recruited && f.pos.distanceTo(player.pos) < 10).sort((a, b) => a.pos.distanceTo(player.pos) - b.pos.distanceTo(player.pos));
+          for (const f of near) {
+            const l2 = addToSlots({ ...d.st, n: left }, f.pack, [...Array(27).keys()]);
+            if (l2 < left) { taken += left - l2; left = l2; followerSay(f, PACK_LINES); }
+            if (!left) break;
+          }
+        }
+        d.st.n = left;
         if (taken > 0) Sound.pickup();
         if (d.st.n <= 0) { removeDrop(d); continue; }
       } else { const k = 14 * dt / dist; v.x += dx * k; v.y += dy * k; v.z += dz * k; }
@@ -6485,7 +6683,7 @@ const containers = {
   craft: { get: (i) => craftGrid[i], set: (i, v) => { craftGrid[i] = v; } },
   furnace: { get: (i) => curFurnace.slots[i], set: (i, v) => { curFurnace.slots[i] = v; },
     accept: (i, st) => (i === 2 ? false : i === 1 ? FUEL[st.id] !== undefined : true) },
-  pack: { get: (i) => companion.pack[i], set: (i, v) => { companion.pack[i] = v; } },
+  pack: { get: (i) => (packOwner ? packOwner.pack[i] : null), set: (i, v) => { if (packOwner) packOwner.pack[i] = v; } },
 };
 function openInventory(mode = 'inv', arg = null) {
   invMode = mode; craftSize = mode === 'table' ? 3 : 2;
@@ -6505,11 +6703,17 @@ function closeInventory(relock) {
   state = 'paused';
   if (relock) lockPointer(); else showMenu('pause');
 }
+function partyLabel() {
+  const p = followers.filter((f) => f.recruited);
+  if (!p.length) return '';
+  const names = p.slice(0, 3).map((f) => f.name).join(', ') + (p.length > 3 ? ` +${p.length - 3}` : '');
+  return `<span>♥ ${names} ${p.length > 1 ? 'are' : 'is'} with you</span>`;
+}
 const slotEl = (c, i, st, extra = '') => `<div class="slot${extra}" data-c="${c}" data-i="${i}">${slotInner(st, true)}</div>`;
 function renderInventory() {
   if (state !== 'inventory') return;
   const surv2 = isSurvival(), creativeInv = !surv2 && invMode === 'inv';
-  $('invTitle').textContent = { inv: creativeInv ? 'Creative Inventory' : 'Inventory', table: 'Crafting Table', furnace: 'Furnace', pack: companion ? `${COMPANION_NAME}'s Pack` : 'Pack' }[invMode];
+  $('invTitle').textContent = { inv: creativeInv ? 'Creative Inventory' : 'Inventory', table: 'Crafting Table', furnace: 'Furnace', pack: packOwner ? `${packOwner.name}'s Pack` : 'Pack' }[invMode];
   $('invSub').textContent = creativeInv ? 'infinite items · pick anything' : invMode === 'pack' ? `she carries what you can't` : '';
   let top = '';
   if (creativeInv) top = `<div class="grid catalog" id="invGrid">${catalogHTML()}</div>`;
@@ -6519,7 +6723,7 @@ function renderInventory() {
     for (let i = 0; i < n * n; i++) g += slotEl('craft', i, craftGrid[i]);
     g += '</div>';
     const rc = currentRecipe();
-    top = `<div class="craftRow">${invMode === 'inv' ? `<div class="avatar">${companion && companion.recruited ? `<span>♥ ${COMPANION_NAME} is with you</span>` : ''}</div>` : ''}
+    top = `<div class="craftRow">${invMode === 'inv' ? `<div class="avatar">${partyLabel()}</div>` : ''}
       <div class="craftBox">${g}<div class="arrow">➜</div>${slotEl('result', 0, rc ? stackOf(rc.out, rc.n) : null, ' result')}</div>
       <button class="btn small rbtn" id="rbBtn">Recipe book</button></div>`;
   } else if (invMode === 'furnace') {
@@ -6529,7 +6733,7 @@ function renderInventory() {
       <div class="fhelp">Top: something to smelt · bottom: fuel (coal, wood, planks…)</div></div>`;
   } else if (invMode === 'pack') {
     let g = '<div class="grid">';
-    for (let i = 0; i < 27; i++) g += slotEl('pack', i, companion.pack[i]);
+    for (let i = 0; i < 27; i++) g += slotEl('pack', i, packOwner ? packOwner.pack[i] : null);
     top = g + '</div>';
   }
   $('invTop').innerHTML = top;
@@ -6630,7 +6834,7 @@ function quickMove(c, i) {
       const slot = SMELT[st.id] !== undefined ? 0 : FUEL[st.id] !== undefined ? 1 : -1;
       if (slot < 0) return;
       left = addToSlots(st, curFurnace.slots, [slot]);
-    } else if (invMode === 'pack') left = addToSlots(st, companion.pack, [...Array(27).keys()]);
+    } else if (invMode === 'pack' && packOwner) left = addToSlots(st, packOwner.pack, [...Array(27).keys()]);
     else left = addToSlots(st, inv, i < 9 ? [...Array(27).keys()].map((k) => k + 9) : [...Array(9).keys()]);
   } else left = addToInv(st);
   C.set(i, left ? { ...st, n: left } : null);
@@ -6925,11 +7129,11 @@ document.addEventListener('mousedown', (e) => {
   if (e.button === 0) {
     mouse.left = true; mouse.leftUsed = false;
     if (targetAnimal) { hitAnimal(targetAnimal); mouse.leftUsed = true; }   // a click on an animal never starts breaking
-    else if (targetCompanion) { companionSay(POKE_LINES); mouse.leftUsed = true; }
+    else if (targetFollower) { followerSay(targetFollower, POKE_LINES); hand.swing = 0.001; mouse.leftUsed = true; }
   } else if (e.button === 2) {
     mouse.right = true; mouse.rightUsed = false; mouse.rightTimer = 0.3;
     if (targetAnimal) { interactAnimal(targetAnimal); mouse.rightUsed = true; }
-    else if (targetCompanion) { interactCompanion(); mouse.rightUsed = true; }
+    else if (targetFollower) { interactCompanion(targetFollower); mouse.rightUsed = true; }
     else if (useHeld(true) === 'used') mouse.rightUsed = true;
   } else if (e.button === 1) { e.preventDefault(); pickBlock(); }
 });
@@ -6997,7 +7201,8 @@ function startWorld(s) {
   for (const d of [...drops]) removeDrop(d);
   for (const t of thrown) scene.remove(t.mesh); thrown.length = 0;
   furnaces.clear();
-  if (companion) { scene.remove(companion.root); companion = null; }
+  for (const f of [...followers]) removeFollower(f);
+  Phantom.vanishAll(); Phantom.depthTime = 0; Phantom.nextT = PH_FIRST;
   player.flying = false; player.riding = null; updateBadges();
   if (tabletUsing) tabletClose(false);
   resetInventory(settings.gameMode); resetSurvival(); _statsKey = '';
@@ -7052,7 +7257,7 @@ function frame(now) {
   if (state !== 'paused' && state !== 'loading') {
     updateAnimals(dt);
     if (player.riding) updateCamera(0);   // the camera follows the saddle after the mount has moved
-    updateCompanion(dt);
+    updateFollowers(dt);
     updateDrops(dt);
     updateThrown(dt);
     updateFurnaces(dt);
@@ -7112,14 +7317,15 @@ window.__blocklands = {
   animals, spawnAnimal, hitAnimal, interactAnimal, toggleFlight, setInstantBreak, get targetAnimal() { return targetAnimal; },
   getMeta, setMeta, rsComps, useBlock, cycleView, setRealistic, get viewMode() { return viewMode; }, get rsTickN() { return rsTickN; }, get relightPending() { return relightQueue.size; },
   placeAt(x, y, z, id, meta = 0) { const r = setBlock(x, y, z, id, null, meta); fluidNotify(x, y, z); return r; }, hand, pm, sunLight,
-  inv, refreshHotbar, B, I, ITEMS, get state2() { return state; }, stackOf, setGameMode, surv, drops, get companion() { return companion; },
+  inv, refreshHotbar, B, I, ITEMS, get state2() { return state; }, stackOf, setGameMode, surv, drops, get companion() { return followers[0] || null; }, followers, get targetFollower() { return targetFollower; }, hurtFollower, spawnCampFollower,
+  followerSay, faintFollower, riftAt, get packOwner() { return packOwner; },
   setSlot(i, id, n = 1, extra = {}) { inv[i] = id ? stackOf(id, n, extra) : null; refreshHotbar(); }, openInventory, slotClick, craftGrid, matchRecipe,
   furnaceAt, furnaces, thrown, throwSphere, mount, dismount, get riding() { return player.riding; }, tabletUse, tabletClose, get tabletURL() { return tabletURL; },
   get hellFactor() { return hellFactor; }, fluidQ, interactCompanion, hurtPlayer, countSpheres, useHeld, DepthMusic, get isoZoom() { return isoZoom; },
   get target2() { return target; }, lookDir, updateIsoCamera, isoCam, selected() { return selected; }, animalData, rollVariant, placeCompanionCamp,
   updateFurnaces, stepFluids(n, dt = 0.3) { for (let i = 0; i < n; i++) updateFluids(dt); }, get cursor() { return cursor; }, renderInventory,
   closeInventory, get invMode() { return invMode; }, dropItem, updateDrops, spawnEggUse, get fluidCount() { return fluidQ.size; },
-  mouse, keys, selectSlot, openInventory, closeInventory, hand, Sound, get fps() { return fps; },
+  mouse, keys, selectSlot, Sound, get fps() { return fps; },
   column(x, z) { sampleColumn(x, z); return { h: _h, biome: BIO_NAMES[_b] }; },
   breakAt(x, y, z) { const id = getBlock(x, y, z); if (id > 0) breakBlock({ x, y, z, id }); }, get target() { return target; }, get breaking() { return breaking; },
   sillyName, NAME_POOLS, SPECIES, nameTags, Phantom, OwnSong, refreshMusicUI, tabletGo, canEmbedVideo, IS_FILE, killAnimal, animalFromData, itemName,
