@@ -71,6 +71,9 @@
     transform: rotate(-14deg); text-shadow: 2px 2px 0 #3f3f00; animation: pulse 1s ease-in-out infinite alternate; }
   @keyframes pulse { from { transform: rotate(-14deg) scale(1); } to { transform: rotate(-14deg) scale(1.1); } }
   .sub { text-align: center; color: #bdbdbd; font-size: 12px; margin: 8px 0 16px; }
+  .ver { text-align: center; color: #8d8d8d; font-size: 11px; letter-spacing: 1px; margin: -10px 0 14px; }
+  #loading .ver { margin: 10px 0 0; color: #c9c9c9; text-shadow: 2px 2px 0 #000; }
+  #updMsg { background: #3a2a06; border: 2px solid #d9a944; color: #ffe08a; font-size: 12px; line-height: 1.45; padding: 8px 10px; margin: 0 0 12px; }
   .btn { display: block; width: 100%; padding: 11px 10px; font: inherit; font-size: 16px; font-weight: 700; color: #fff; cursor: pointer;
     background: linear-gradient(#7c7c7c, #5b5b5b); border: 2px solid #000; text-shadow: 2px 2px 0 #333;
     box-shadow: inset 2px 2px 0 rgba(255,255,255,.32), inset -2px -3px 0 rgba(0,0,0,.35); }
@@ -250,6 +253,8 @@
     <h1 class="logo">BLOCK<span>LANDS</span></h1>
     <div class="splash" id="splash">Creative Mode!</div>
     <div class="sub">Infinite procedural world · Seed <span id="seedLabel">—</span></div>
+    <div class="ver" id="verMenu"></div>
+    <div id="updMsg" class="hidden"></div>
     <button class="btn" id="playBtn">Play</button>
     <div id="lockMsg"></div>
     <div class="modes">
@@ -305,6 +310,7 @@
   <div class="t ts" id="loadText">Loading Three.js…</div>
   <div id="loadBar"><div id="loadFill"></div></div>
   <div id="loadErr"></div>
+  <div class="ver" id="verLoad"></div>
 </div>
 
 <script>
@@ -348,6 +354,10 @@ window.__booted = true;
    ============================================================================ */
 
 // ───────────────────────────── CONFIG ─────────────────────────────
+// Version: shown on the loading screen, the title/pause menu and the F3 overlay. Bump it with every release so it's
+// easy to tell which copy a browser is running.
+const VERSION = '6.1', VERSION_DATE = '17 Oct 2026';
+for (const id of ['verLoad', 'verMenu']) { const el = document.getElementById(id); if (el) el.textContent = `v${VERSION} · ${VERSION_DATE}`; }
 const CHUNK = 16;            // chunk width / depth in blocks
 const HEIGHT = 128;          // world build height
 const LAYER = CHUNK * CHUNK;
@@ -6051,7 +6061,7 @@ const Phantom = {
       // mostly ~38–49° off where you're looking (and mostly left, clear of your hand); later on, sometimes behind you
       const behind = t > 150 && Math.random() < Math.min(0.4, (t - 150) / 400);
       const side = Math.random() < 0.65 ? 1 : -1, ang = player.yaw + side * (behind ? 1.9 + Math.random() * 1.1 : 0.66 + Math.random() * 0.2);
-      const dist = phantomDist(t) + (Math.random() - 0.5) * 8;
+      const dist = Math.max(12, phantomDist(t) + (Math.random() - 0.5) * 8);   // never so close it vanishes the moment it appears
       const x = c.x - Math.sin(ang) * dist, z = c.z - Math.cos(ang) * dist, fx = Math.floor(x), fz = Math.floor(z);
       if (this.figs.some((f) => f.active && Math.hypot(f.pos.x - fx, f.pos.z - fz) < 4)) continue;
       for (let y = Math.floor(c.y) + 6; y > Math.max(LAVA_Y + 1, c.y - 14); y--) {
@@ -7227,6 +7237,26 @@ function loadingProgress() {
   return done / total;
 }
 
+// When the game is served from a website, ask the server (bypassing the browser's cache) which version it has now.
+// If it's newer than the one running, the browser is showing a saved copy: say so, and how to load the new one.
+const verNum = (v) => v.split('.').map(Number).reduce((a, n, i) => a + n * 1000 ** (2 - i), 0);
+let updateChecked = false;
+async function checkForUpdate() {
+  if (updateChecked || !/^https?:$/.test(location.protocol) || NO_EMBEDS) return;
+  updateChecked = true;
+  try {
+    const r = await fetch(location.href.split('#')[0], { cache: 'no-store' });
+    if (!r.ok) return;
+    const m = (await r.text()).match(/const VERSION = '([\d.]+)'/);
+    if (!m || verNum(m[1]) <= verNum(VERSION)) return;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    const el = $('updMsg');
+    el.innerHTML = `<b>A newer version (v${m[1]}) is on the server.</b> Your browser is still showing a saved copy (v${VERSION}). ` +
+      `Press <b>${mac ? 'Cmd + Shift + R' : 'Ctrl + Shift + R'}</b> to load the new one.`;
+    el.classList.remove('hidden');
+  } catch (e) { /* offline or blocked — nothing to report */ }
+}
+
 // ───────────────────────────── MAIN LOOP ─────────────────────────────
 let last = performance.now(), fpsAcc = 0, fpsFrames = 0, fps = 0, hudTimer = 0;
 function frame(now) {
@@ -7241,6 +7271,7 @@ function frame(now) {
       placeAtSpawn();
       placeCompanionCamp();
       state = 'title'; window.__running = true;
+      checkForUpdate();
       $('loading').classList.add('hidden'); showMenu('title');
     }
   } else updateChunks(state === 'playing' ? 8 : 12, dt);
@@ -7287,7 +7318,7 @@ function frame(now) {
       const deg = ((-player.yaw * 180 / Math.PI) % 360 + 360) % 360;
       const facing = ['North (-Z)', 'East (+X)', 'South (+Z)', 'West (-X)'][Math.round(deg / 90) % 4];
       $('debug').textContent =
-        `Blocklands  ${fps} fps\n` +
+        `Blocklands v${VERSION}  ${fps} fps\n` +
         `XYZ  ${p.x.toFixed(2)} / ${p.y.toFixed(2)} / ${p.z.toFixed(2)}\n` +
         `Chunk  ${Math.floor(p.x / 16)}, ${Math.floor(p.z / 16)}   loaded ${chunks.size}  meshed ${meshed}\n` +
         `Facing  ${facing}   Biome  ${BIO_NAMES[_b]}\n` +
